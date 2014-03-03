@@ -80,12 +80,19 @@ __global__ void filterActs_YxX_color(float* images, float* filters, float* targe
     const int shFilterLoadX = tidx % (B_Y * filtersPerThread);
     const int myImgIdx = blockIdx.x * B_X * imgsPerThread + threadIdx.x;
     images += myImgIdx;
+    // find the correspoind filter module by block index
     filters += filtersPerThread * B_Y * blockFilterIdx
              + shFilterLoadY * numFilters + shFilterLoadX;
     if (!conv) {
+        // if is a unshared local module, then shift filter module's address
+        // by the module's index. If is a shared conv filter module, then all
+        // image patch use the same filter module, so it is not need to shift
+        // the filter module's address
         filters += moduleIdx * numColors * filterPixels * numFilters;
     }
 
+    // output target has to crrospond the image patch, so the target address
+    // is shift by both block index and module index.
     targets += moduleIdx * numImages
             + (blockFilterIdx * B_Y * filtersPerThread + threadIdx.y) * numImages * numModulesY * numModulesX
             + myImgIdx;
@@ -572,6 +579,9 @@ __global__ void filterActs_YxX_sparse_random(float* images, float* filters, floa
     int numImages = images.getNumCols();
     int imgPixels = images.getNumRows()/numImgColors;
     int imgSizeX = imgPixels / imgSizeY;
+    // this is the number of filter modules. 
+    // NOTICE: NOT the number of filters (numFilters).
+    // if conv, then only one filter mudule, else there will as much filter mudules as the image patches
     int filterModuleMult = conv ? 1 : numModules;
     
     assert(numGroups > 1 || (numImgColors > 0 && (numImgColors <= 3 || numImgColors % 2 == 0)));
@@ -584,7 +594,11 @@ __global__ void filterActs_YxX_sparse_random(float* images, float* filters, floa
 
     int imgStride = images.getStride(); // images does not need to be a contiguous matrix
 
+    // determin filter size by rows of weight matrix:
+    // if conv, then the whole column is a filter.
+    // if not conv, then the whole column is the concatenation of multiple filters.
     int filterPixels = filters.getNumRows() / (filterModuleMult * numFilterColors);
+    // the filterSize is used by cuda kernel
     int filterSize = int(sqrt(filterPixels));
     assert(filterSize * filterSize == filterPixels);
     assert(filters.getNumRows() == filterModuleMult * numFilterColors * filterPixels);
@@ -631,6 +645,9 @@ __global__ void filterActs_YxX_sparse_random(float* images, float* filters, floa
                     } else {
                         if (numFilters % 32 == 0) {
                             cudaFuncSetCacheConfig(filterActs_YxX_color< 4, 32, 4, 8, 1, false, false >, cudaFuncCachePreferShared);
+                            // read this situation first. it seems to be the simplest.
+                            // NOTICE: the conv is transpose to the kernel. so the kernel
+                            // has diff logic to process local and conv behavior.
                             filterActs_YxX_color < 4, 32, 4, 8, 1, false, false > <<<blocks, threads>>>(images.getDevData(), filters.getDevData(), targets.getDevData(),
                                         numImages, numFilters, imgSizeY, imgSizeX, filterSize, paddingStart, moduleStride, numModulesY, numModulesX, imgStride, scaleTargets, scaleOutput, conv);
                         } else {
@@ -1189,6 +1206,8 @@ void convFilterActs(NVMatrix& images, NVMatrix& filters, NVMatrix& targets,
                    int imgSizeY, int numModulesY, int numModulesX, int paddingStart, int moduleStride,
                    int numImgColors, int numGroups,
                    float scaleTargets, float scaleOutput) {
+    // the diff between conv and local behave is the last param, bool conv
+    // for conv, conv = true
      _filterActs(images, filters, targets, imgSizeY, numModulesY, numModulesX, paddingStart, moduleStride, numImgColors, numGroups, scaleTargets, scaleOutput, true);
 }
 
@@ -1202,6 +1221,8 @@ void localFilterActs(NVMatrix& images, NVMatrix& filters, NVMatrix& targets,
                    int imgSizeY, int numModulesY, int numModulesX, int paddingStart, int moduleStride,
                    int numImgColors, int numGroups,
                    float scaleTargets, float scaleOutput) {
+    // for local layer, the conv param is false
+    // all other is same with conv layer.
      _filterActs(images, filters, targets, imgSizeY, numModulesY, numModulesX, paddingStart, moduleStride, numImgColors, numGroups, scaleTargets, scaleOutput, false);
 }
 
