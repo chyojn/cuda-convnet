@@ -887,6 +887,7 @@ class LocalLayerParser(WeightLayerParser):
         self.verify_num_range(dic['imgSize'], 'imgSize', 1, None)
         dic['filters'] = [filters*groups for filters,groups in zip(dic['filters'], dic['groups'])]
         dic['filterPixels'] = [filterSize**2 for filterSize in dic['filterSize']]
+        # number of image patch in X direction
         dic['modulesX'] = [1 + int(ceil((2 * padding + imgSize - filterSize) / float(stride))) for padding,imgSize,filterSize,stride in zip(dic['padding'], dic['imgSize'], dic['filterSize'], dic['stride'])]
 
         dic['filterChannels'] = [channels/groups for channels,groups in zip(dic['channels'], dic['groups'])]
@@ -898,6 +899,7 @@ class LocalLayerParser(WeightLayerParser):
             raise LayerParsingError("Layer '%s': all inputs must produce equally-dimensioned output. Dimensions are: %s." % (name, ", ".join("%dx%dx%d" % (filters, modulesX, modulesX) for filters,modulesX in zip(dic['filters'], dic['modulesX']))))
 
         dic['modulesX'] = dic['modulesX'][0]
+        # modules is the total number of image patch
         dic['modules'] = dic['modulesX']**2
         dic['filters'] = dic['filters'][0]
         dic['outputs'] = dic['modules'] * dic['filters']
@@ -945,6 +947,15 @@ class ConvLayerParser(LocalLayerParser):
         num_biases = dic['filters'] if dic['sharedBiases'] else dic['modules']*dic['filters']
 
         eltmult = lambda list1, list2: [l1 * l2 for l1,l2 in zip(list1, list2)]
+        # Weight matrix size:
+        #   n_rows: filterPixels * filterChannels
+        #   n_cols: filters * inputs
+        # It is a shared weight, all image PATCH (which size is filterPixels * filterChannels) use this
+        # weight matrix.
+        # It is clear that each filter has its own weight, but why multiply with len(inputs)?
+        # the len(inputs) means the number of differrent input source, not the number of input blob.
+        # if a layer has 2 different input source, such as data_rgb, data_hsv, then each input source
+        # will use different weight.
         self.make_weights(dic['initW'], eltmult(dic['filterPixels'], dic['filterChannels']), [dic['filters']] * len(dic['inputs']), order='C')
         self.make_biases(num_biases, 1, order='C')
 
@@ -960,6 +971,12 @@ class LocalUnsharedLayerParser(LocalLayerParser):
 
         eltmult = lambda list1, list2: [l1 * l2 for l1,l2 in zip(list1, list2)]
         scmult = lambda x, lst: [x * l for l in lst]
+        # weight matrix size has some diff with shared conv layer:
+        # n_col is still filters*inputs, but the n_row is:
+        # modules*filterPixels*filterChannels
+        # has multiple size larger (the "modules") than the shared conv layer.
+        # because the weight is not shared anymore.
+        # each image patch (each "modules") has its private weight matrix
         self.make_weights(dic['initW'], scmult(dic['modules'], eltmult(dic['filterPixels'], dic['filterChannels'])), [dic['filters']] * len(dic['inputs']), order='C')
         self.make_biases(dic['modules'] * dic['filters'], 1, order='C')
         
